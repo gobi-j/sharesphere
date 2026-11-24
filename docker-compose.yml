@@ -1,0 +1,170 @@
+name: sharesphere
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sharesphere}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sharesphere_local}
+      POSTGRES_DB: sharesphere
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d sharesphere"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-sharesphere}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-sharesphere_local}
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  auth-service:
+    build: { context: ./backend, args: { MODULE: auth-service } }
+    environment: &backend-env
+      DB_USER: ${POSTGRES_USER:-sharesphere}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sharesphere_local}
+      JWT_SECRET: ${JWT_SECRET:-local-only-change-me-to-a-long-random-value-1234567890}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-internal-service-token-change-me}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-sharesphere}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-sharesphere_local}
+      DB_URL: jdbc:postgresql://postgres:5432/auth_db
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+
+  community-service:
+    build: { context: ./backend, args: { MODULE: community-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/community_db
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+
+  borrowcircle-service:
+    build: { context: ./backend, args: { MODULE: borrowcircle-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/borrowcircle_db
+      COMMUNITY_SERVICE_URL: http://community-service:8082
+      SHARES_UPLOAD_DIR: /data/uploads
+    volumes:
+      - borrowcircle-uploads:/data/uploads
+    depends_on:
+      postgres: { condition: service_healthy }
+      community-service: { condition: service_started }
+    restart: unless-stopped
+
+  booking-service:
+    build: { context: ./backend, args: { MODULE: booking-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/booking_db
+      BORROWCIRCLE_SERVICE_URL: http://borrowcircle-service:8083
+      COMMUNITY_SERVICE_URL: http://community-service:8082
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      borrowcircle-service: { condition: service_started }
+    restart: unless-stopped
+
+  payments-service:
+    build: { context: ./backend, args: { MODULE: payments-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/payments_db
+      UPI_PAYEE_NAME: ${UPI_PAYEE_NAME:-ShareSphere}
+      UPI_WEBHOOK_SECRET: ${UPI_WEBHOOK_SECRET:-local-webhook-secret-change-me}
+      BOOKING_SERVICE_URL: http://booking-service:8084
+      AUTH_SERVICE_URL: http://auth-service:8081
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+
+  chat-service:
+    build: { context: ./backend, args: { MODULE: chat-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/chat_db
+      BOOKING_SERVICE_URL: http://booking-service:8084
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+
+  notifications-service:
+    build: { context: ./backend, args: { MODULE: notifications-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/notifications_db
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+
+  reviews-service:
+    build: { context: ./backend, args: { MODULE: reviews-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/reviews_db
+      BOOKING_SERVICE_URL: http://booking-service:8084
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+
+  admin-service:
+    build: { context: ./backend, args: { MODULE: admin-service } }
+    environment:
+      <<: *backend-env
+      DB_URL: jdbc:postgresql://postgres:5432/admin_db
+      BOOKING_SERVICE_URL: http://booking-service:8084
+    depends_on:
+      postgres: { condition: service_healthy }
+      booking-service: { condition: service_started }
+    restart: unless-stopped
+
+  gateway:
+    build: { context: ./backend, args: { MODULE: gateway } }
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-local-only-change-me-to-a-long-random-value-1234567890}
+      SERVICES_AUTH: http://auth-service:8081
+      SERVICES_COMMUNITY: http://community-service:8082
+      SERVICES_BORROWCIRCLE: http://borrowcircle-service:8083
+      SERVICES_BOOKING: http://booking-service:8084
+      SERVICES_PAYMENTS: http://payments-service:8085
+      SERVICES_CHAT: http://chat-service:8086
+      SERVICES_NOTIFICATIONS: http://notifications-service:8087
+      SERVICES_REVIEWS: http://reviews-service:8088
+      SERVICES_ADMIN: http://admin-service:8089
+    ports: ["8080:8080"]
+    depends_on:
+      auth-service: { condition: service_started }
+      community-service: { condition: service_started }
+      borrowcircle-service: { condition: service_started }
+      booking-service: { condition: service_started }
+      payments-service: { condition: service_started }
+      chat-service: { condition: service_started }
+      notifications-service: { condition: service_started }
+      reviews-service: { condition: service_started }
+      admin-service: { condition: service_started }
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./apps/web
+      args: { VITE_API_BASE_URL: http://localhost:8080 }
+    ports: ["3000:80"]
+    depends_on: [gateway]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  borrowcircle-uploads:

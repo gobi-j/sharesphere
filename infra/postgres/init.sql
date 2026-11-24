@@ -1,0 +1,9 @@
+CREATE DATABASE auth_db OWNER sharesphere;
+CREATE DATABASE community_db OWNER sharesphere;
+CREATE DATABASE borrowcircle_db OWNER sharesphere;
+CREATE DATABASE booking_db OWNER sharesphere;
+CREATE DATABASE payments_db OWNER sharesphere;
+CREATE DATABASE chat_db OWNER sharesphere;
+CREATE DATABASE notifications_db OWNER sharesphere;
+CREATE DATABASE reviews_db OWNER sharesphere;
+CREATE DATABASE admin_db OWNER sharesphere;
